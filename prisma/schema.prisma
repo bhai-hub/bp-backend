@@ -1,0 +1,307 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  SUPER_ADMIN
+  HR_MANAGER
+  EMPLOYEE
+}
+
+enum OrgStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum EmployeeStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum OnboardingStatus {
+  INVITED
+  ACCOUNT_CREATED
+  PROFILE_PENDING
+  IKIGAI_PENDING
+  COMPLETED
+  SUSPENDED
+}
+
+enum IkigaiDimension {
+  LOVE
+  GOOD_AT
+  WORLD_NEEDS
+  PAID_FOR
+}
+
+enum IkigaiQuestionType {
+  TEXT
+  LONG_TEXT
+  SINGLE_SELECT
+  MULTI_SELECT
+}
+
+enum TransactionType {
+  PURCHASE
+  ALLOCATION
+  RECOGNITION
+  WELLNESS
+  REDEMPTION
+  REFUND
+  ADJUSTMENT
+}
+
+model User {
+  id             String        @id @default(uuid())
+  email          String        @unique
+  passwordHash   String
+  role           Role
+  firstName      String
+  lastName       String
+  organizationId String?
+  status         OrgStatus     @default(ACTIVE)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  employee       Employee?
+  auditLogs      AuditLog[]
+
+  @@index([email])
+  @@index([organizationId])
+  @@map("users")
+}
+
+model Country {
+  id        String   @id @default(uuid())
+  code      String   @unique // ISO 3166-1 alpha-2 code e.g. "IN", "US", "DE"
+  name      String   // e.g. "India", "United States", "Germany"
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  policies      JurisdictionPolicy[]
+  organizations Organization[]
+
+  @@map("countries")
+}
+
+model JurisdictionPolicy {
+  id                       String   @id @default(uuid())
+  countryCode              String
+  policyVersion            Int      @default(1)
+  isActive                 Boolean  @default(true)
+  status                   String   @default("CONFIGURED") // "CONFIGURED", "DEFAULT_REVIEW_REQUIRED"
+  
+  // Feature controls
+  leaderboardEnabled       Boolean  @default(true)
+  publicProfileEnabled     Boolean  @default(true)
+  portabilityEnabled       Boolean  @default(true)
+  redemptionEnabled        Boolean  @default(true)
+  nonCashRedemptionOnly    Boolean  @default(true)
+  automatedDecisionEnabled Boolean  @default(false)
+  humanReviewRequired      Boolean  @default(false)
+  consentRequired          Boolean  @default(false)
+  dataLocationPolicy       String   @default("GLOBAL") // "GLOBAL", "IN_COUNTRY_OPTION", "EU_ONLY", "LOCAL_ONLY"
+  retentionPolicy          String   @default("STANDARD") // "STANDARD", "CONFIGURABLE", "MINIMAL_STRICT"
+  customSettings           Json?
+  description              String?
+
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  country                  Country  @relation(fields: [countryCode], references: [code], onDelete: Cascade)
+  organizations            Organization[]
+
+  @@unique([countryCode, policyVersion])
+  @@index([countryCode, isActive])
+  @@map("jurisdiction_policies")
+}
+
+model Organization {
+  id                        String                 @id @default(uuid())
+  name                      String
+  legalName                 String
+  slug                      String                 @unique
+  email                     String
+  phone                     String
+  countryCode               String                 // Mandatory ISO code, e.g. "IN", "US"
+  countryName               String                 // Normalized e.g. "India", "United States"
+  jurisdictionPolicyVersion Int                    @default(1)
+  jurisdictionPolicyId      String?
+  timezone                  String                 @default("UTC")
+  currency                  String                 @default("USD")
+  status                    OrgStatus              @default(ACTIVE)
+  bpPolicy                  Json?
+  createdAt                 DateTime               @default(now())
+  updatedAt                 DateTime               @updatedAt
+
+  country                   Country                @relation(fields: [countryCode], references: [code])
+  jurisdictionPolicy        JurisdictionPolicy?    @relation(fields: [jurisdictionPolicyId], references: [id], onDelete: SetNull)
+  users                     User[]
+  employees                 Employee[]
+  bpAccount                 OrganizationBPAccount?
+  transactions              BPTransaction[]
+  ikigaiResponses           IkigaiResponse[]
+  auditLogs                 AuditLog[]
+
+  @@index([slug])
+  @@index([countryCode])
+  @@map("organizations")
+}
+
+model OrganizationBPAccount {
+  id             String       @id @default(uuid())
+  organizationId String       @unique
+  purchasedBP    Int          @default(0)
+  allocatedBP    Int          @default(0)
+  availableBP    Int          @default(0)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("organization_bp_accounts")
+}
+
+model Employee {
+  id                    String            @id @default(uuid())
+  userId                String            @unique
+  organizationId        String
+  employeeCode          String
+  department            String
+  designation           String
+  joiningDate           DateTime          @default(now())
+  status                EmployeeStatus    @default(ACTIVE)
+  onboardingStatus      OnboardingStatus  @default(COMPLETED)
+  invitationTokenHash   String?           @unique
+  invitationExpiresAt   DateTime?
+  onboardingCompletedAt DateTime?
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+
+  user                  User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization          Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  wallet                EmployeeWallet?
+  transactions          BPTransaction[]
+  ikigaiResponses       IkigaiResponse[]
+
+  @@unique([organizationId, employeeCode])
+  @@index([organizationId])
+  @@index([onboardingStatus])
+  @@index([invitationTokenHash])
+  @@map("employees")
+}
+
+model EmployeeWallet {
+  id               String   @id @default(uuid())
+  employeeId       String   @unique
+  spendableBalance Int      @default(0)
+  loyaltyBalance   Int      @default(0)
+  lifetimeBalance  Int      @default(0)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  employee         Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@map("employee_wallets")
+}
+
+model IkigaiQuestionnaire {
+  id          String           @id @default(uuid())
+  version     Int              @unique @default(1)
+  title       String
+  description String?
+  isActive    Boolean          @default(true)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  questions   IkigaiQuestion[]
+  responses   IkigaiResponse[]
+
+  @@map("ikigai_questionnaires")
+}
+
+model IkigaiQuestion {
+  id              String              @id @default(uuid())
+  questionnaireId String
+  dimension       IkigaiDimension
+  questionText    String
+  questionType    IkigaiQuestionType  @default(LONG_TEXT)
+  options         Json?
+  displayOrder    Int                 @default(0)
+  isRequired      Boolean             @default(true)
+  isActive        Boolean             @default(true)
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  questionnaire   IkigaiQuestionnaire @relation(fields: [questionnaireId], references: [id], onDelete: Cascade)
+  responses       IkigaiResponse[]
+
+  @@index([questionnaireId, dimension])
+  @@map("ikigai_questions")
+}
+
+model IkigaiResponse {
+  id              String              @id @default(uuid())
+  organizationId  String
+  employeeId      String
+  questionnaireId String
+  questionId      String
+  dimension       IkigaiDimension
+  response        String
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  organization    Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  employee        Employee            @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  questionnaire   IkigaiQuestionnaire @relation(fields: [questionnaireId], references: [id], onDelete: Cascade)
+  question        IkigaiQuestion      @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@unique([employeeId, questionId])
+  @@index([organizationId])
+  @@index([employeeId])
+  @@index([questionnaireId])
+  @@map("ikigai_responses")
+}
+
+model BPTransaction {
+  id              String          @id @default(uuid())
+  organizationId  String
+  employeeId      String?
+  type            TransactionType
+  amount          Int
+  reference       String
+  description     String
+  createdByUserId String?
+  createdAt       DateTime        @default(now())
+
+  organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  employee        Employee?       @relation(fields: [employeeId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+  @@index([employeeId])
+  @@map("bp_transactions")
+}
+
+model AuditLog {
+  id             String        @id @default(uuid())
+  organizationId String?
+  userId         String?
+  action         String
+  details        Json?
+  ipAddress      String?
+  createdAt      DateTime      @default(now())
+
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  user           User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+  @@index([userId])
+  @@map("audit_logs")
+}
